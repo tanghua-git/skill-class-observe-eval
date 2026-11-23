@@ -12,6 +12,7 @@ md2docx_report.py v2 — 课堂观察评课报告 Markdown → Word 转换脚本
 【正文】仿宋11pt，1.4倍行距，段后4pt，首行缩进2字符（列表/表格/引用除外）
 【引用块】左侧深蓝竖线 + 浅蓝底色 + 灰黑字10.5pt
 【表格】表头深蓝底白字黑体9.5pt（跨页自动重复）；数据行白/#F2F6FB斑马纹；灰边框0.5pt；
+        附录 J 的提问梳理表（六列）与逐问评价表（四列）按内容比例设固定列宽，并用紧凑字号 9pt；
         单元格垂直居中；表格宽度100%撑满版心
 【分隔线】markdown 的 --- 渲染为浅灰细线（不再静默忽略）
 【页眉】居中"课堂观察评课报告"灰字 + 底部细线
@@ -154,23 +155,55 @@ def set_table_fullwidth(table):
     tblW.set(qn("w:w"), "5000")
 
 
-def write_cell(cell, text, is_header=False):
+def write_cell(cell, text, is_header=False, compact=False):
+    """写入单元格。compact=True 用于附录 J 的逐问表：字号 9pt、行距 1.05、段前后 1pt，控制长表篇幅。"""
     cell.text = ""
     para = cell.paragraphs[0]
-    para.paragraph_format.space_before = Pt(2)
-    para.paragraph_format.space_after = Pt(2)
-    para.paragraph_format.line_spacing = 1.15
+    pad = Pt(1) if compact else Pt(2)
+    para.paragraph_format.space_before = pad
+    para.paragraph_format.space_after = pad
+    para.paragraph_format.line_spacing = 1.05 if compact else 1.15
+    size = 9 if compact else 9.5
     if is_header:
-        add_runs_with_bold(para, text, HEI, 9.5, base_bold=True,
+        add_runs_with_bold(para, text, HEI, size, base_bold=True,
                            color=RGBColor(0xFF, 0xFF, 0xFF))
     else:
-        add_runs_with_bold(para, text, FANGSONG, 9.5)
+        add_runs_with_bold(para, text, FANGSONG, size)
     set_cell_borders(cell)
     vcenter_cell(cell)
     if is_header:
         shade_cell(cell, C_PRIMARY)
     elif cell._tc.getparent().index(cell._tc) >= 0:
         pass  # 斑马纹按行处理
+
+
+# 按表头识别的固定列宽（占版心宽度的比例）。只对表头关键字全部命中、且列数一致的表生效。
+# 等宽会让「序号」这类短列和「提问对象与学生应答」这类长列占一样宽，行高被撑大数倍。
+COL_WIDTH_SPECS = [
+    (("教师原问",), (0.05, 0.11, 0.25, 0.10, 0.28, 0.21)),   # 提问梳理表：六列
+    (("评价", "优化建议"), (0.12, 0.40, 0.34, 0.14)),        # 逐问评价表：四列
+]
+TEXT_WIDTH_CM = 15.8   # A4 纵向、左右边距各 2.6cm
+
+
+def apply_col_widths(table, header_cells, ncols):
+    """命中列宽规格时，把表格设为固定布局并按比例分配列宽。"""
+    header = [re.sub(r"\*\*", "", c).strip() for c in header_cells]
+    for keys, ratios in COL_WIDTH_SPECS:
+        if len(ratios) == ncols and all(any(k in h for h in header) for k in keys):
+            table.autofit = False
+            tblPr = table._tbl.tblPr
+            layout = OxmlElement("w:tblLayout")
+            layout.set(qn("w:type"), "fixed")
+            tblPr.append(layout)
+            widths = [int(Cm(TEXT_WIDTH_CM) * r) for r in ratios]
+            for idx, col in enumerate(table.columns):
+                col.width = widths[idx]
+            for row in table.rows:
+                for idx, cell in enumerate(row.cells):
+                    cell.width = widths[idx]
+            return True
+    return False
 
 
 def add_table(doc, table_lines):
@@ -189,12 +222,13 @@ def add_table(doc, table_lines):
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.autofit = True
     set_table_fullwidth(table)
+    compact = apply_col_widths(table, rows[0], ncols)
 
     for i, row_cells in enumerate(rows):
         for j in range(ncols):
             text = row_cells[j] if j < len(row_cells) else ""
             cell = table.cell(i, j)
-            write_cell(cell, text, is_header=(i == 0))
+            write_cell(cell, text, is_header=(i == 0), compact=compact)
             if i > 0 and (i - 1) % 2 == 1:  # 数据行斑马纹：第2、4…数据行
                 shade_cell(cell, C_ZEBRA)
     set_row_repeat_header(table.rows[0])
