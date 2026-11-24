@@ -163,7 +163,7 @@ def write_cell(cell, text, is_header=False, compact=False):
     para.paragraph_format.space_before = pad
     para.paragraph_format.space_after = pad
     para.paragraph_format.line_spacing = 1.05 if compact else 1.15
-    size = 9 if compact else 9.5
+    size = 8.5 if compact else 9.5
     if is_header:
         add_runs_with_bold(para, text, HEI, size, base_bold=True,
                            color=RGBColor(0xFF, 0xFF, 0xFF))
@@ -180,8 +180,10 @@ def write_cell(cell, text, is_header=False, compact=False):
 # 按表头识别的固定列宽（占版心宽度的比例）。只对表头关键字全部命中、且列数一致的表生效。
 # 等宽会让「序号」这类短列和「提问对象与学生应答」这类长列占一样宽，行高被撑大数倍。
 COL_WIDTH_SPECS = [
+    (("层级", "可取"), (0.10, 0.26, 0.07, 0.27, 0.30)),   # v3.4.1 逐问合并表：五列
     (("教师原问",), (0.05, 0.11, 0.25, 0.10, 0.28, 0.21)),   # 提问梳理表：六列
     (("评价", "优化建议"), (0.12, 0.40, 0.34, 0.14)),        # 逐问评价表：四列
+    (("关键发言",), (0.13, 0.17, 0.42, 0.28)),              # 附录 I 重点话语表：四列
 ]
 TEXT_WIDTH_CM = 15.8   # A4 纵向、左右边距各 2.6cm
 
