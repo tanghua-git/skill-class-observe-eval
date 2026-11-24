@@ -4,17 +4,19 @@
 check_questions.py — 评课报告附录 J「教师课堂提问梳理与评价」校验脚本（class-observe-eval 配套）
 
 用途
-    对生成的评课报告 Markdown 做结构化校验，共 14 项：
-      1  附录 J 区域存在          2  提问可梳理度等级（J-0）
-      3  J-1 序号从 1 连续        4  J-1 列数与表头一致
-      5  J-2 逐问覆盖 J-1        6  J-1/J-2 单元格字数（≤60，61–80 警告，>80 失败）
+    对生成的评课报告 Markdown 做结构化校验，共 15 项：
+      1  附录 J 区域存在          2  提问可梳理度等级
+      3  逐问表序号从 1 连续      4  逐问表列数与表头一致
+      5  逐问有建议             6  单元格字数（按列设上限：原问不限、应答 45、建议 75）
       7  原问溯源（需 --source）  8  禁用词（分数/等第排名/否定标签/理想比例）
-      9  建议动作取值             10 认知层级取值
-      11 非认知问句合并（甲级）   12 深评卡数量 2–4 张（甲级）
-      13 J-4 整体画像存在         14 内部标记泄露（附录 J 区域内）
+      9  建议动作取值             10 认知层级取值（全称或简称）
+      11 合并行合规（仅非认知短问，≤3 个序号） 12 深评卡数量 2–3 张（甲级）
+      13 整体画像存在             14 内部标记泄露（附录 J 区域内）
+      15 逐问表只有一个表头（v3.4.1）
+    v3.4.1 起梳理表与评价表合并为一张五列表（序号/教师原问/层级/学生应答→教师接应/可取与可改），
+    该表按表头识别为 J-1C；旧格式（J-1 梳理表 + J-2 评价表）仍可校验，用于复核历史报告。
     区域界定与表格定位均容错：附录 J 起始标题支持「### J. …」「### J …」「## 附录 J …」等变体；
-    J-1/J-2 表格靠表头关键字定位（J-1 需含「序号」「教师原问」，J-2 需含「序号」「评价」「优化建议」），
-    不依赖子节标题文字；找不到 J 区域起始标题时退回全文按表头查找。丙级/丁级为降级输出，3–8 项标 SKIP。
+    找不到起始标题时退回全文按表头查找。丙级/丁级为降级输出，3–9 项标 SKIP。
 
 用法
     python3 check_questions.py <报告.md> [--source <课堂输入原文.md>] [--whole] [--json] [--selftest]
@@ -41,7 +43,7 @@ import tempfile
 import unicodedata
 from collections import Counter
 
-SCRIPT_VERSION = "1.0"
+SCRIPT_VERSION = "1.1"
 
 # ================================================================ 常量与正则
 
@@ -61,7 +63,8 @@ J_START_BARE_RE = re.compile(r'^(?:附录\s*)?J\s*[\.．、:：]?\s*(?:[（(][^�
 
 # 表头关键字（表格靠表头定位，不依赖标题文字）
 J1_HEADER_KEYS = ('序号', '原问')            # 「教师原问」或「原问」
-J2_HEADER_KEYS = ('序号', '评价', '建议')    # 「优化建议」含「建议」
+J1C_HEADER_KEYS = ('序号', '原问', '可取')   # v3.4.1 合并表：再加「可取与可改」
+J2_HEADER_KEYS = ('序号', '评价', '建议')    # 旧格式评价表「优化建议」含「建议」
 
 # --- 可梳理度等级 -------------------------------------------------------------
 LEVEL_INFO = {
@@ -89,7 +92,14 @@ NEGATE_RE = re.compile(r'(?:不|非|未达|不到|无法|不是|仅|只|难|尚|
 
 # --- 取值白名单 ---------------------------------------------------------------
 ALLOWED_ACTIONS = ('保留', '加追问', '改写问句', '调整对象或留白', '合并或删减')
+# v3.4.1 表内用短标：改写、留白、合并
+ALLOWED_ACTION_SHORT = ('保留', '加追问', '改写', '留白', '合并', '删减')
+ALLOWED_ACTION_ALL = ALLOWED_ACTIONS + ALLOWED_ACTION_SHORT
+# 非认知问句的全称与简称
+NON_COGNITIVE_ALL = ('组织管理', '确认求同', '征询意愿', '管', '确', '愿')
 ALLOWED_COG_LEVELS = ('事实复述', '理解解释', '分析评价', '迁移创造', '组织管理', '确认求同', '征询意愿')
+# v3.4.1 表内用简称，两套并列识别
+ALLOWED_COG_SHORT = ('复述', '理解', '分析', '迁移', '管', '确', '愿')
 NON_COGNITIVE = ('组织管理', '确认求同', '征询意愿')
 
 # --- 深评卡 / J-4 --------------------------------------------------------------
@@ -252,13 +262,16 @@ def split_row(line):
 
 
 def classify_table(header):
-    """按表头关键字判断表格类型：'J-1' / 'J-2' / None。"""
+    """按表头关键字判断表格类型：'J-1'（旧梳理表）/ 'J-1C'（v3.4.1 合并表）/ 'J-2' / None。"""
     hs = [strip_md(h).replace(' ', '') for h in header]
 
     def has(key):
         return any(key in h for h in hs)
 
     if has('序号') and has('原问'):
+        # 同时带评价/建议列 → v3.4.1 合并表
+        if has('可取') or has('可改') or has('建议') or has('评价'):
+            return 'J-1C'
         return 'J-1'
     # J-2 标准表头含「评价」「优化建议」； tolerate 「可取/可提升」拆列写法
     if has('序号') and has('建议') and (has('评价') or has('可取') or has('可提升')):
@@ -422,7 +435,8 @@ def analyze(lines, source_text=None, whole=False):
 
     start, end, found, title = find_region(lines, headings)
     tables = parse_tables(lines, fence, start, end)
-    j1_tables = [t for t in tables if t['kind'] == 'J-1']
+    j1_tables = [t for t in tables if t['kind'] in ('J-1', 'J-1C')]
+    j1c_tables = [t for t in tables if t['kind'] == 'J-1C']
     j2_tables = [t for t in tables if t['kind'] == 'J-2']
     fallback = (not found) and bool(j1_tables or j2_tables)
 
@@ -529,15 +543,35 @@ def analyze(lines, source_text=None, whole=False):
         else:
             add(4, 'J-1 列数一致', 'PASS', '共 %d 行数据，列数均与表头一致' % nrows)
 
-    # ---------- 5 逐问覆盖 ----------
-    j2_rows = []   # (表, 行号, 单元格, 序号列表)
+    # ---------- 5 逐问有建议 ----------
+    j2_rows = []   # (表, 行号, 单元格, 序号列表)（仅旧格式）
     j2_seq_col = -1
     if degraded:
-        add(5, '逐问覆盖', 'SKIP', '降级输出，不要求 J-2 逐问表')
+        add(5, '逐问有建议', 'SKIP', '降级输出，无逐问表')
     elif not j1_tables:
-        add(5, '逐问覆盖', 'SKIP', '无 J-1 表，无法核对覆盖（见检查 3）')
+        add(5, '逐问有建议', 'SKIP', '无逐问表，无法核对（见检查 3）')
+    elif j1c_tables:
+        bad, nrows = [], 0
+        for t in j1c_tables:
+            acol = find_col(t['header'], '可取', '可改', '建议', '评价')
+            scol = find_col(t['header'], '序号')
+            if acol < 0:
+                bad.append('%s 表头无「可取与可改」列' % table_label('J-1', t))
+                continue
+            for line_no, cells in t['rows']:
+                nrows += 1
+                val = strip_md(cells[acol]) if acol < len(cells) else ''
+                seq_txt = (cells[scol] if 0 <= scol < len(cells) else str(line_no)) or str(line_no)
+                bare = re.sub(r'[\s\-—–－~～…\.。（）()]', '', val)
+                if len(bare) < 6:
+                    bad.append('%s 第 %s 行「可取与可改」为空或过短：%r'
+                               % (table_label('J-1', t), seq_txt, val[:20]))
+        if bad:
+            add(5, '逐问有建议', 'FAIL', '%d 行缺少评价或建议（共 %d 行）' % (len(bad), nrows), bad)
+        else:
+            add(5, '逐问有建议', 'PASS', '共 %d 行，每行都有「可取与可改」，未出现只列问句不给建议的行' % nrows)
     elif not j2_tables:
-        add(5, '逐问覆盖', 'FAIL', '未找到 J-2 逐问评价表（表头需同时含「序号」「评价」「优化建议」）')
+        add(5, '逐问有建议', 'FAIL', '未找到评价列：既没有 v3.4.1 合并表（含「可取与可改」），也没有旧格式 J-2 评价表')
     else:
         for t in j2_tables:
             col = find_col(t['header'], '序号')
@@ -574,15 +608,33 @@ def analyze(lines, source_text=None, whole=False):
                 details.append('J-2 序号 %d 在 J-1 中不存在' % x)
             for x in dup[:30]:
                 details.append('序号 %d 在 J-2 中出现 %d 次' % (x, Counter(j2_list)[x]))
-            add(5, '逐问覆盖', 'FAIL', '；'.join(parts) + '（J-2 共 %d 行）' % len(j2_rows), details)
+            add(5, '逐问有建议', 'FAIL', '；'.join(parts) + '（旧格式 J-2 共 %d 行）' % len(j2_rows), details)
         else:
-            add(5, '逐问覆盖', 'PASS', 'J-2 共 %d 行，覆盖 J-1 全部 %d 个序号，无多余、无重复' % (len(j2_rows), len(j1_set)))
+            add(5, '逐问有建议', 'PASS', '旧格式：J-2 共 %d 行，覆盖 J-1 全部 %d 个序号' % (len(j2_rows), len(j1_set)))
 
-    # ---------- 6 单元格字数 ----------
+    # ---------- 6 单元格字数（按列设上限） ----------
+    def cell_limits(colname):
+        c = strip_md(colname).replace(' ', '')
+        if '原问' in c:
+            return (100, 140)          # 照录，仅防异常长文
+        if '可取' in c or '可改' in c:
+            return (75, 95)
+        if '评价' in c or '建议' in c:
+            return (60, 80)
+        if '提问对象' in c:
+            return (60, 80)        # 旧格式六列
+        if '应答' in c:
+            return (45, 65)
+        if '接应' in c:
+            return (30, 45)
+        if '层级' in c:
+            return (10, 14)
+        return (60, 80)
+
     if degraded:
         add(6, '单元格字数', 'SKIP', '降级输出，无逐问表')
     elif not j1_tables and not j2_tables:
-        add(6, '单元格字数', 'SKIP', '无 J-1/J-2 表')
+        add(6, '单元格字数', 'SKIP', '无逐问表')
     else:
         over, warn = [], []
         ncells = 0
@@ -596,19 +648,23 @@ def analyze(lines, source_text=None, whole=False):
                             continue
                         n = count_chars(cell)
                         ncells += 1
-                        if n > 60:
-                            colname = strip_md(t['header'][ci]) if ci < len(t['header']) else '第 %d 列' % (ci + 1)
-                            item = '%s 第 %s 行「%s」%d 字：%s' % (table_label(kind, t), seq_txt or line_no, colname, n, strip_md(cell)[:30] + '…')
-                            (over if n > 80 else warn).append(item)
+                        colname = t['header'][ci] if ci < len(t['header']) else ''
+                        wlimit, flimit = cell_limits(colname)
+                        if n > flimit or n > wlimit:
+                            cname = strip_md(colname) if colname else '第 %d 列' % (ci + 1)
+                            item = '%s 第 %s 行「%s」%d 字（上限 %d）：%s' % (
+                                table_label(kind, t), seq_txt or line_no, cname, n, wlimit,
+                                strip_md(cell)[:30] + '…')
+                            (over if n > wlimit else warn).append(item)
         if over or warn:
             parts = []
             if over:
-                parts.append('%d 格超过 80 字' % len(over))
+                parts.append('%d 格超过所在列上限' % len(over))
             if warn:
-                parts.append('%d 格 61–80 字' % len(warn))
-            add(6, '单元格字数', 'FAIL' if over else 'WARN', '；'.join(parts) + '（共检查 %d 格，上限 60 字）' % ncells, over + warn)
+                parts.append('%d 格偏长' % len(warn))
+            add(6, '单元格字数', 'FAIL' if over else 'WARN', '；'.join(parts) + '（共检查 %d 格）' % ncells, over + warn)
         else:
-            add(6, '单元格字数', 'PASS', 'J-1/J-2 共 %d 格（除序号列），均不超过 60 字' % ncells)
+            add(6, '单元格字数', 'PASS', '共 %d 格，均在所在列的字数上限内（原问照录不限、应答 45、建议 75）' % ncells)
 
     # ---------- 7 原问溯源 ----------
     if degraded:
@@ -672,9 +728,30 @@ def analyze(lines, source_text=None, whole=False):
 
     # ---------- 9 建议动作取值 ----------
     if degraded:
-        add(9, '建议动作取值', 'SKIP', '降级输出，不要求 J-2 逐问表')
+        add(9, '建议动作取值', 'SKIP', '降级输出，无逐问表')
+    elif j1c_tables:
+        bad, n = [], 0
+        for t in j1c_tables:
+            acol = find_col(t['header'], '可取', '可改', '建议', '评价')
+            scol = find_col(t['header'], '序号')
+            if acol < 0:
+                bad.append('%s 表头无「可取与可改」列' % table_label('J-1', t))
+                continue
+            for line_no, cells in t['rows']:
+                if acol >= len(cells):
+                    continue
+                n += 1
+                val = strip_md(cells[acol])
+                if not any(a in val for a in ALLOWED_ACTION_ALL):
+                    seq_txt = cells[scol] if 0 <= scol < len(cells) else line_no
+                    bad.append('%s 第 %s 行的建议未标动作（五种：保留/加追问/改写问句/调整对象或留白/合并或删减）'
+                               % (table_label('J-1', t), seq_txt))
+        if bad:
+            add(9, '建议动作取值', 'WARN', '%d 行未标五种动作之一' % len(bad), bad)
+        else:
+            add(9, '建议动作取值', 'PASS', '共 %d 行，建议均标了五种动作之一' % n)
     elif not j2_tables:
-        add(9, '建议动作取值', 'SKIP', '无 J-2 表')
+        add(9, '建议动作取值', 'SKIP', '无建议列')
     else:
         bad, n = [], 0
         for t in j2_tables:
@@ -688,13 +765,13 @@ def analyze(lines, source_text=None, whole=False):
                     continue
                 n += 1
                 val = strip_md(cells[acol])
-                if not any(a in val for a in ALLOWED_ACTIONS):
+                if not any(a in val for a in ALLOWED_ACTION_ALL):
                     seq_txt = cells[scol] if 0 <= scol < len(cells) else line_no
                     bad.append('%s 第 %s 行「建议动作」=「%s」，不在五种取值之内' % (table_label('J-2', t), seq_txt, val[:30]))
         if bad:
             add(9, '建议动作取值', 'WARN', '%d 行取值不在五种之内（保留/加追问/改写问句/调整对象或留白/合并或删减）' % len(bad), bad)
         else:
-            add(9, '建议动作取值', 'PASS', 'J-2 共 %d 行，均在五种取值之内' % n)
+            add(9, '建议动作取值', 'PASS', '旧格式：J-2 共 %d 行，均在五种取值之内' % n)
 
     # ---------- 10 认知层级取值 ----------
     if degraded:
@@ -713,51 +790,39 @@ def analyze(lines, source_text=None, whole=False):
                     continue
                 n += 1
                 val = strip_md(cells[lcol])
-                if not any(x in val for x in ALLOWED_COG_LEVELS):
+                if not any(x in val for x in ALLOWED_COG_LEVELS + ALLOWED_COG_SHORT):
                     bad.append('%s 第 %d 行「认知层级」=「%s」，不在七种取值之内' % (table_label('J-1', t), line_no, val[:30] or '（空）'))
         if bad:
-            add(10, '认知层级取值', 'WARN', '%d 行取值不在七种之内（事实复述/理解解释/分析评价/迁移创造/组织管理/确认求同/征询意愿）' % len(bad), bad)
+            add(10, '认知层级取值', 'WARN', '%d 行取值不在七种之内（全称：事实复述/理解解释/分析评价/迁移创造/组织管理/确认求同/征询意愿；简称：复述/理解/分析/迁移/管/确/愿）' % len(bad), bad)
         else:
             add(10, '认知层级取值', 'PASS', 'J-1 共 %d 行，均在七种取值之内' % n)
 
-    # ---------- 11 非认知问句合并（仅甲级） ----------
+    # ---------- 11 合并行合规（甲级；v3.4.1：逐问保留，合并仅限同环节连续确认短问） ----------
     if level != '甲':
         reason = '降级输出，不检查' if degraded else ('仅甲级检查' if level else '未识别可梳理度等级，不检查')
-        add(11, '非认知问句合并', 'SKIP', reason)
+        add(11, '合并行合规', 'SKIP', reason)
     elif not j1_rows:
-        add(11, '非认知问句合并', 'SKIP', '无 J-1 表')
+        add(11, '合并行合规', 'SKIP', '无逐问表')
     else:
         warns = []
-        non_cog = Counter()
-        singles = {}   # (类别, 环节) -> [单独成行的序号…]
+        nmerge = 0
         for t, line_no, cells, nums in j1_rows:
-            lcol = find_col(t['header'], '认知层级', '认知水平', '层级')
-            scol = find_col(t['header'], '环节')
+            if len(nums) <= 1:
+                continue
+            nmerge += 1
+            lcol = find_col(t['header'], '认知层级', '层级')
             val = strip_md(cells[lcol]) if 0 <= lcol < len(cells) else ''
-            stage = strip_md(cells[scol]) if 0 <= scol < len(cells) else ''
-            kinds = [k for k in NON_COGNITIVE if k in val]
-            if kinds and nums:
-                kind = kinds[0]
-                non_cog[kind] += 1
-                seq = nums[0]
-                row = next((r for r in j2_rows if seq in r[3]), None)
-                if row is not None and len(row[3]) == 1:
-                    singles.setdefault((kind, stage), []).append(seq)
-        # 同一类在同一环节只有一问时，单独成行属正常；两问及以上仍各自单行，才提示合并
-        for (kind, stage), seqs in sorted(singles.items(), key=lambda kv: kv[1][0]):
-            if len(seqs) >= 2:
-                warns.append('%s（%s）有 %d 问各自单独成行（第 %s 问），建议合并为一行'
-                             % (kind, stage or '环节未标', len(seqs), '、'.join(str(s) for s in seqs)))
-        for t, line_no, cells, nums in j2_rows:
-            if len(nums) > 10:
-                warns.append('%s 第 %d 行合并了 %d 个序号，超过 10 个，建议拆行' % (table_label('J-2', t), line_no, len(nums)))
-        desc = '、'.join('%s %d 问' % (k, v) for k, v in non_cog.items()) if non_cog else 'J-1 中无非认知问句'
+            if not any(k in val for k in NON_COGNITIVE_ALL):
+                warns.append('第 %d 行合并了 %d 个序号（%s），层级为「%s」；认知性问句应各自成行'
+                             % (line_no, len(nums), '、'.join(str(x) for x in nums), val or '未填'))
+            if len(nums) > 3:
+                warns.append('第 %d 行合并了 %d 个序号，超过 3 个，应拆行' % (line_no, len(nums)))
         if warns:
-            add(11, '非认知问句合并', 'WARN', '%s；%d 处需关注' % (desc, len(warns)), warns)
+            add(11, '合并行合规', 'WARN', '%d 个合并行中 %d 处需关注' % (nmerge, len(warns)), warns)
         else:
-            add(11, '非认知问句合并', 'PASS', '%s；没有同类别同环节可合并而未合并的行，合并行均不超过 10 个序号' % desc)
+            add(11, '合并行合规', 'PASS', '共 %d 个合并行，均为同环节连续的非认知短问，且不超过 3 个序号' % nmerge)
 
-    # ---------- 12 深评卡数量（甲级期望 2–4 张） ----------
+    # ---------- 12 深评卡数量（甲级期望 2–3 张） ----------
     if level != '甲':
         if level == '乙':
             reason = '乙级不出深评卡，不检查'
@@ -775,15 +840,15 @@ def analyze(lines, source_text=None, whole=False):
                 if num not in card_nums:
                     card_nums.append(num)
         n = len(card_nums)
-        msg = '%d 张（第 %s 问；期望 2–4 张）' % (n, '、'.join(str(x) for x in card_nums) if card_nums else '无')
-        if n < 2 or n > 4:
+        msg = '%d 张（第 %s 问；期望 2–3 张）' % (n, '、'.join(str(x) for x in card_nums) if card_nums else '无')
+        if n < 2 or n > 3:
             add(12, '深评卡数量', 'WARN', msg)
         else:
             add(12, '深评卡数量', 'PASS', msg)
 
-    # ---------- 13 J-4 整体画像存在 ----------
+    # ---------- 13 整体画像存在 ----------
     if degraded:
-        add(13, 'J-4 存在', 'SKIP', '降级输出，不要求 J-4 整体画像')
+        add(13, '整体画像存在', 'SKIP', '降级输出，不要求整体画像')
     else:
         boundary = start
         if j2_rows:
@@ -802,14 +867,13 @@ def analyze(lines, source_text=None, whole=False):
                 break
         if found_line is None:
             for idx, text in sub_heads:
-                m = J_SUB_RE.match(text)
-                if idx >= boundary and m and unicodedata.normalize('NFKC', m.group(1)) == '4':
-                    found_line, kw = idx, 'J-4 小标题'
+                if idx >= boundary and ('整体画像' in text or '提问整体' in text):
+                    found_line, kw = idx, '整体画像小标题'
                     break
         if found_line is None:
-            add(13, 'J-4 存在', 'WARN', 'J-1/J-2 之后未见「整体画像」「结构描述」「问题链」字样或 J-4 小标题')
+            add(13, '整体画像存在', 'WARN', '逐问表之后未见「整体画像」「结构描述」「问题链」字样')
         else:
-            add(13, 'J-4 存在', 'PASS', '第 %d 行含「%s」' % (found_line + 1, kw))
+            add(13, '整体画像存在', 'PASS', '第 %d 行含「%s」' % (found_line + 1, kw))
 
     # ---------- 14 内部标记泄露（附录 J 区域内） ----------
     if found:
@@ -829,6 +893,17 @@ def analyze(lines, source_text=None, whole=False):
         add(14, '内部标记泄露', 'FAIL', '附录 J 区域内发现 %d 处内部标记（范围：%s）' % (len(leaks), ldesc), leaks)
     else:
         add(14, '内部标记泄露', 'PASS', '范围内未发现内部标记（范围：%s）' % ldesc)
+
+    # ---------- 15 单一表头（v3.4.1） ----------
+    if degraded:
+        add(15, '单一表头', 'SKIP', '降级输出，无逐问表')
+    elif not j1_tables:
+        add(15, '单一表头', 'SKIP', '无逐问表')
+    elif len(j1_tables) > 1:
+        add(15, '单一表头', 'WARN', '发现 %d 张逐问表（表头在第 %s 行），已按环节分组；v3.4.1 要求全表只一个表头'
+            % (len(j1_tables), '、'.join(str(t['header_no']) for t in j1_tables)))
+    else:
+        add(15, '单一表头', 'PASS', '逐问表 1 张（表头第 %d 行），未按环节重复表头' % j1_tables[0]['header_no'])
 
     checks.sort(key=lambda c: c['id'])
     n_fail = sum(1 for c in checks if c['status'] == 'FAIL')
@@ -901,45 +976,36 @@ SAMPLE_A = '''# 课堂观察评课报告
 
 提问可梳理度：甲级（逐句可还原）。本附录只梳理教师提问，学生提问见附录 A；不打分、不设等第、不做排名。
 
-#### J-1 提问梳理表
+#### J-1 逐问梳理与评价
 
-| 序号 | 环节 | 教师原问 | 认知层级 | 提问对象与学生应答 | 教师接应 |
-|:----:|------|----------|----------|--------------------|----------|
-| 1 | 导入 | 这幅图上画了什么？ | 事实复述 | 齐答："鸡和兔" | 肯定 |
-| 2 | 导入 | 准备好了吗？ | 确认求同 | 齐答："好了" | 转入下一环节 |
-| 3 | 审题 | 来解释一下这段话？ | 理解解释 | 点名·学生A："就是问鸡和兔各有几只" | 肯定后追问 |
-| 4 | 审题 | 明白了吗？ | 确认求同 | 齐答："明白" | 转入下一环节 |
-| 5 | 探究 | 怎么加的？ | 理解解释 | 点名·学生B："一只鸡加了两条腿" | 探因追问 |
-| 6 | 总结 | 这节课你学到了什么？ | 分析评价 | 自请·学生C："画图法" | 复述采纳 |
+| 序号 | 教师原问 | 层级 | 应答 → 接应 | 可取与可改 |
+|:---:|---|:---:|---|---|
+| 1 | 这幅图上画了什么？ | 复述 | 齐答"鸡和兔" → 肯定 | 可取：激活旧知。可改：仅齐答，未追问。加追问："你怎么看出来的？" |
+| 2、4 | 准备好了吗？／明白了吗？ | 确 | 齐答"好了" → 推进 | 可改：确认性问句未等应答。改写："要研究哪两个问题？" |
+| 3 | 来解释一下这段话？ | 理解 | 点名·学生A"就是问鸡和兔各有几只" → 肯定后追问 | 可取：学生转述题意。可改：一人说完即过。加追问："他抓住了哪两个信息？" |
+| 5 | 怎么加的？ | 理解 | 点名·学生B"一只鸡加了两条腿" → 追问（探因） | 可取：把操作引向算理。加追问："加两条腿是把鸡变成什么？" |
+| 6 | 这节课你学到了什么？ | 分析 | 自请·学生C"画图法" → 复述采纳 | 可取：开放总结。可改：答后即下课。加追问："为什么用画图法？" |
 
-#### J-2 逐问评价与优化建议表
-
-| 序号 | 评价 | 优化建议 | 建议动作 |
-|:----:|------|----------|:--------:|
-| 1 | 可取：激活旧知。可提升：仅齐答。 | 追问："你怎么看出来的？" | 加追问 |
-| 2、4 | 审题环节的确认性问句，学生答"好了"即可。 | 核心概念处改为需要说理由的问法。 | 改写问句 |
-| 3 | 可取：请学生转述题意。可提升：只有一人应答。 | 转问："他抓住了哪两个信息？" | 加追问 |
-| 5 | 可取：探因。可提升：无。 | 建议保留 | 保留 |
-| 6 | 可取：开放总结。可提升：答后即下课。 | 追问："为什么用画图法？" | 加追问 |
-
-#### J-3 重点问句深评
+#### J-2 重点问句深评
 
 > **深评卡 · 第 5 问**（探究）
-> **对话链还原**：教师："怎么加的？" → 学生B："一只鸡加了两条腿" → 教师："为什么？"
-> **这里发生了什么**：探因追问把操作引向算理。
-> **假如我来教**：保留探因问，追加转问。
-> **留给你的问题**：你更想让学生说清"步骤"还是"道理"？
+> **三句话**：教师"怎么加的？" → 学生B"一只鸡加了两条腿" → 教师"为什么？"
+> **看什么**：探因追问把操作引向算理，是本课的关键一步。
+> **我会怎么改**：保留探因问，追加转问"谁能用自己的话说说他为什么先全画成鸡"。
+> **留给您**：你更想让学生说清"步骤"还是"道理"？
 
 > **深评卡 · 第 6 问**（总结）
-> **对话链还原**：教师："这节课你学到了什么？" → 学生C："画图法"
-> **这里发生了什么**：总结问开放，答后即下课。
-> **假如我来教**：追加转问。
-> **留给你的问题**：总结环节你希望留几分钟？
+> **三句话**：教师"这节课你学到了什么？" → 学生C"画图法" → （随即下课）
+> **看什么**：总结问开放，但答后即下课，没有跟进。
+> **我会怎么改**：提前两分钟抛出，让学生写一句话再离开。
+> **留给您**：总结环节你希望留几分钟？
 
-#### J-4 提问整体画像
+#### J-3 提问整体画像
 
-**结构描述**：共 6 问；事实复述 1 问、确认求同 2 问、理解解释 2 问、分析评价 1 问。
-**问题链识别**：审题 → 探究形成一条主线。
+**结构**：共 6 问；复述 1 问、理解 2 问、分析 1 问、确 2 问。
+**主线**：3 → 5 → 6，由审题到探究到总结，中间没有断点。
+**发现**：确认求同 2 问均未等应答（第 2、4 问）。
+**可取**：第 5 问的探因追问。
 
 ### K. 其他附录
 
@@ -1035,7 +1101,7 @@ def selftest():
     st = status_of(res_a)
     bad = [(i, s) for i, s in st.items() if s in ('FAIL', 'WARN')]
     expect(not bad, '样例 A 应无 FAIL/WARN，实际：%s' % bad)
-    expect(all(st.get(i) == 'PASS' for i in range(1, 15)), '样例 A 全部 14 项应为 PASS，实际：%s' % st)
+    expect(all(st.get(i) == 'PASS' for i in range(1, 16)), '样例 A 全部 15 项应为 PASS，实际：%s' % st)
     expect(st.get(7) == 'PASS' and '命中率 100.0%' in res_a['checks'][6]['message'], '样例 A 溯源应 100% 命中')
     expect(res_a['level'] == '甲级 逐句可还原', '样例 A 等级应为甲级，实际：%s' % res_a['level'])
     expect(exit_code_of(res_a) == 0, '样例 A 退出码应为 0')
